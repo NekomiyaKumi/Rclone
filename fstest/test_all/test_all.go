@@ -12,7 +12,7 @@ Make TesTrun have a []string of flags to try - that then makes it generic
 
 import (
 	"flag"
-	"log"
+	"fmt"
 	"math/rand"
 	"os"
 	"path"
@@ -21,6 +21,7 @@ import (
 	"time"
 
 	_ "github.com/rclone/rclone/backend/all" // import all fs
+	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/rclone/rclone/lib/pacer"
 )
@@ -35,6 +36,7 @@ var (
 	clean        = flag.Bool("clean", false, "Instead of testing, clean all left over test directories")
 	runOnly      = flag.String("run", "", "Run only those tests matching the regexp supplied")
 	timeout      = flag.Duration("timeout", 60*time.Minute, "Maximum time to run each test for before giving up")
+	race         = flag.Bool("race", false, "If set run the tests under the race detector")
 	configFile   = flag.String("config", "fstest/test_all/config.yaml", "Path to config file")
 	outputDir    = flag.String("output", path.Join(os.TempDir(), "rclone-integration-tests"), "Place to store results")
 	emailReport  = flag.String("email", "", "Set to email the report to the address supplied")
@@ -67,13 +69,13 @@ func main() {
 	flag.Parse()
 	conf, err := NewConfig(*configFile)
 	if err != nil {
-		log.Println("test_all should be run from the root of the rclone source code")
-		log.Fatal(err)
+		fs.Log(nil, "test_all should be run from the root of the rclone source code")
+		fs.Fatal(nil, fmt.Sprint(err))
 	}
 	configfile.Install()
 
 	// Seed the random number generator
-	rand.Seed(time.Now().UTC().UnixNano())
+	randInstance := rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
 
 	// Filter selection
 	if *testRemotes != "" {
@@ -90,7 +92,7 @@ func main() {
 	if *clean {
 		err := cleanRemotes(conf)
 		if err != nil {
-			log.Fatalf("Failed to clean: %v", err)
+			fs.Fatalf(nil, "Failed to clean: %v", err)
 		}
 		return
 	}
@@ -99,11 +101,11 @@ func main() {
 	for _, remote := range conf.Backends {
 		names = append(names, remote.Remote)
 	}
-	log.Printf("Testing remotes: %s", strings.Join(names, ", "))
+	fs.Logf(nil, "Testing remotes: %s", strings.Join(names, ", "))
 
 	// Runs we will do for this test in random order
 	runs := conf.MakeRuns()
-	rand.Shuffle(len(runs), runs.Swap)
+	randInstance.Shuffle(len(runs), runs.Swap)
 
 	// Create Report
 	report := NewReport()

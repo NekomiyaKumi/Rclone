@@ -1,5 +1,4 @@
 //go:build !noselfupdate
-// +build !noselfupdate
 
 // Package selfupdate provides the selfupdate command.
 package selfupdate
@@ -10,11 +9,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -35,6 +34,9 @@ import (
 	versionCmd "github.com/rclone/rclone/cmd/version"
 )
 
+//go:embed selfupdate.md
+var selfUpdateHelp string
+
 // Options contains options for the self-update command
 type Options struct {
 	Check   bool
@@ -51,19 +53,19 @@ var Opt = Options{}
 func init() {
 	cmd.Root.AddCommand(cmdSelfUpdate)
 	cmdFlags := cmdSelfUpdate.Flags()
-	flags.BoolVarP(cmdFlags, &Opt.Check, "check", "", Opt.Check, "Check for latest release, do not download")
-	flags.StringVarP(cmdFlags, &Opt.Output, "output", "", Opt.Output, "Save the downloaded binary at a given path (default: replace running binary)")
-	flags.BoolVarP(cmdFlags, &Opt.Stable, "stable", "", Opt.Stable, "Install stable release (this is the default)")
-	flags.BoolVarP(cmdFlags, &Opt.Beta, "beta", "", Opt.Beta, "Install beta release")
-	flags.StringVarP(cmdFlags, &Opt.Version, "version", "", Opt.Version, "Install the given rclone version (default: latest)")
-	flags.StringVarP(cmdFlags, &Opt.Package, "package", "", Opt.Package, "Package format: zip|deb|rpm (default: zip)")
+	flags.BoolVarP(cmdFlags, &Opt.Check, "check", "", Opt.Check, "Check for latest release, do not download", "")
+	flags.StringVarP(cmdFlags, &Opt.Output, "output", "", Opt.Output, "Save the downloaded binary at a given path (default: replace running binary)", "")
+	flags.BoolVarP(cmdFlags, &Opt.Stable, "stable", "", Opt.Stable, "Install stable release (this is the default)", "")
+	flags.BoolVarP(cmdFlags, &Opt.Beta, "beta", "", Opt.Beta, "Install beta release", "")
+	flags.StringVarP(cmdFlags, &Opt.Version, "version", "", Opt.Version, "Install the given rclone version (default: latest)", "")
+	flags.StringVarP(cmdFlags, &Opt.Package, "package", "", Opt.Package, "Package format: zip|deb|rpm (default: zip)", "")
 }
 
 var cmdSelfUpdate = &cobra.Command{
 	Use:     "selfupdate",
 	Aliases: []string{"self-update"},
 	Short:   `Update the rclone binary.`,
-	Long:    strings.ReplaceAll(selfUpdateHelp, "|", "`"),
+	Long:    selfUpdateHelp,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.55",
 	},
@@ -80,19 +82,19 @@ var cmdSelfUpdate = &cobra.Command{
 		}
 		if Opt.Package != "zip" {
 			if Opt.Package != "deb" && Opt.Package != "rpm" {
-				log.Fatalf("--package should be one of zip|deb|rpm")
+				fs.Fatalf(nil, "--package should be one of zip|deb|rpm")
 			}
 			if runtime.GOOS != "linux" {
-				log.Fatalf(".deb and .rpm packages are supported only on Linux")
+				fs.Fatalf(nil, ".deb and .rpm packages are supported only on Linux")
 			} else if os.Geteuid() != 0 && !Opt.Check {
-				log.Fatalf(".deb and .rpm must be installed by root")
+				fs.Fatalf(nil, ".deb and .rpm must be installed by root")
 			}
 			if Opt.Output != "" && !Opt.Check {
 				fmt.Println("Warning: --output is ignored with --package deb|rpm")
 			}
 		}
 		if err := InstallUpdate(context.Background(), &Opt); err != nil {
-			log.Fatalf("Error: %v", err)
+			fs.Fatalf(nil, "Error: %v", err)
 		}
 	},
 }

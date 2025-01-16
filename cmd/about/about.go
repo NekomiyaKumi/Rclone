@@ -22,8 +22,8 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &jsonOutput, "json", "", false, "Format output as JSON")
-	flags.BoolVarP(cmdFlags, &fullOutput, "full", "", false, "Full numbers instead of human-readable")
+	flags.BoolVarP(cmdFlags, &jsonOutput, "json", "", false, "Format output as JSON", "")
+	flags.BoolVarP(cmdFlags, &fullOutput, "full", "", false, "Full numbers instead of human-readable", "")
 }
 
 // printValue formats uv to be output
@@ -46,8 +46,7 @@ func printValue(what string, uv *int64, isSize bool) {
 var commandDefinition = &cobra.Command{
 	Use:   "about remote:",
 	Short: `Get quota information from the remote.`,
-	Long: `
-` + "`rclone about`" + ` prints quota information about a remote to standard
+	Long: `Prints quota information about a remote to standard
 output. The output is typically used, free, quota and trash contents.
 
 E.g. Typical output from ` + "`rclone about remote:`" + ` is:
@@ -95,6 +94,7 @@ see complete list in [documentation](https://rclone.org/overview/#optional-featu
 `,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.41",
+		// "groups":            "",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)

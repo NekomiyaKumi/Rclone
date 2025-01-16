@@ -24,15 +24,14 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.StringArrayVarP(cmdFlags, &options, "option", "o", options, "Option in the form name=value or name")
-	flags.BoolVarP(cmdFlags, &useJSON, "json", "", useJSON, "Always output in JSON format")
+	flags.StringArrayVarP(cmdFlags, &options, "option", "o", options, "Option in the form name=value or name", "")
+	flags.BoolVarP(cmdFlags, &useJSON, "json", "", useJSON, "Always output in JSON format", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "backend <command> remote:path [opts] <args>",
 	Short: `Run a backend-specific command.`,
-	Long: `
-This runs a backend-specific command. The commands themselves (except
+	Long: `This runs a backend-specific command. The commands themselves (except
 for "help" and "features") are defined by the backends and you should
 see the backend docs for definitions.
 
@@ -60,6 +59,7 @@ Note to run these commands on a running backend then see
 `,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.52",
+		"groups":            "Important",
 	},
 	RunE: func(command *cobra.Command, args []string) error {
 		cmd.CheckArgs(2, 1e6, command, args)
@@ -98,8 +98,14 @@ Note to run these commands on a running backend then see
 				out, err = doCommand(context.Background(), name, arg, opt)
 			}
 			if err != nil {
+				if err == fs.ErrorCommandNotFound {
+					extra := ""
+					if f.Features().Overlay {
+						extra = " (try the underlying remote)"
+					}
+					return fmt.Errorf("%q %w%s", name, err, extra)
+				}
 				return fmt.Errorf("command %q failed: %w", name, err)
-
 			}
 			// Output the result
 			writeJSON := false

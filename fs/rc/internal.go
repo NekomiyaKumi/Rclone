@@ -389,10 +389,7 @@ func rcSetSoftMemoryLimit(ctx context.Context, in Params) (out Params, err error
 	if err != nil {
 		return nil, err
 	}
-	oldMemLimit, err := debug.SetMemoryLimit(memLimit)
-	if err != nil {
-		return nil, err
-	}
+	oldMemLimit := debug.SetMemoryLimit(memLimit)
 	out = Params{
 		"existing-mem-limit": oldMemLimit,
 	}
@@ -510,7 +507,7 @@ func rcRunCommand(ctx context.Context, in Params) (out Params, err error) {
 	var httpResponse http.ResponseWriter
 	httpResponse, err = in.GetHTTPResponseWriter()
 	if err != nil {
-		return nil, fmt.Errorf("response object is required\n" + err.Error())
+		return nil, fmt.Errorf("response object is required\n%w", err)
 	}
 
 	var allArgs = []string{}

@@ -18,8 +18,7 @@ func init() {
 var commandDefinition = &cobra.Command{
 	Use:   "lsl remote:path",
 	Short: `List the objects in path with modification time, size and path.`,
-	Long: `
-Lists the objects in the source path to standard output in a human
+	Long: `Lists the objects in the source path to standard output in a human
 readable format with modification time, size and path. Recurses by default.
 
 Eg
@@ -33,6 +32,7 @@ Eg
 ` + lshelp.Help,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.02",
+		"groups":            "Filter,Listing",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)

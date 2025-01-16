@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync/atomic"
 	"time"
 
-	smb2 "github.com/hirochachacha/go-smb2"
+	smb2 "github.com/cloudsoda/go-smb2"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/config/obscure"
@@ -32,16 +31,32 @@ func (f *Fs) dial(ctx context.Context, network, addr string) (*conn, error) {
 		}
 	}
 
-	d := &smb2.Dialer{
-		Initiator: &smb2.NTLMInitiator{
+	d := &smb2.Dialer{}
+	if f.opt.UseKerberos {
+		cl, err := getKerberosClient()
+		if err != nil {
+			return nil, err
+		}
+
+		spn := f.opt.SPN
+		if spn == "" {
+			spn = "cifs/" + f.opt.Host
+		}
+
+		d.Initiator = &smb2.Krb5Initiator{
+			Client:    cl,
+			TargetSPN: spn,
+		}
+	} else {
+		d.Initiator = &smb2.NTLMInitiator{
 			User:      f.opt.User,
 			Password:  pass,
 			Domain:    f.opt.Domain,
 			TargetSPN: f.opt.SPN,
-		},
+		}
 	}
 
-	session, err := d.DialContext(ctx, tconn)
+	session, err := d.DialConn(ctx, tconn, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -89,17 +104,17 @@ func (c *conn) closed() bool {
 //
 // Call removeSession() when done
 func (f *Fs) addSession() {
-	atomic.AddInt32(&f.sessions, 1)
+	f.sessions.Add(1)
 }
 
 // Show the SMB session is no longer in use
 func (f *Fs) removeSession() {
-	atomic.AddInt32(&f.sessions, -1)
+	f.sessions.Add(-1)
 }
 
 // getSessions shows whether there are any sessions in use
 func (f *Fs) getSessions() int32 {
-	return atomic.LoadInt32(&f.sessions)
+	return f.sessions.Load()
 }
 
 // Open a new connection to the SMB server.

@@ -1,4 +1,4 @@
-// Package genautocomplete provides the genautocomplete command.
+// Package genautocomplete provides the completion command.
 package genautocomplete
 
 import (
@@ -11,13 +11,13 @@ func init() {
 }
 
 var completionDefinition = &cobra.Command{
-	Use:   "genautocomplete [shell]",
+	Use:   "completion [shell]",
 	Short: `Output completion script for a given shell.`,
-	Long: `
-Generates a shell completion script for rclone.
+	Long: `Generates a shell completion script for rclone.
 Run with ` + "`--help`" + ` to list the supported shells.
 `,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.33",
 	},
+	Aliases: []string{"genautocomplete"},
 }

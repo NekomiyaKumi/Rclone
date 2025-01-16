@@ -20,15 +20,14 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &Reverse, "reverse", "", Reverse, "Reverse cryptdecode, encrypts filenames")
+	flags.BoolVarP(cmdFlags, &Reverse, "reverse", "", Reverse, "Reverse cryptdecode, encrypts filenames", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "cryptdecode encryptedremote: encryptedfilename",
 	Short: `Cryptdecode returns unencrypted file names.`,
-	Long: `
-rclone cryptdecode returns unencrypted file names when provided with
-a list of encrypted file names. List limit is 10 items.
+	Long: `Returns unencrypted file names when provided with a list of encrypted file
+names. List limit is 10 items.
 
 If you supply the ` + "`--reverse`" + ` flag, it will return encrypted file names.
 

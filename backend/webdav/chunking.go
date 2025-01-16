@@ -14,22 +14,30 @@ import (
 	"io"
 	"net/http"
 	"path"
-	"strings"
+	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/readers"
 	"github.com/rclone/rclone/lib/rest"
 )
 
-func (f *Fs) shouldRetryChunkMerge(ctx context.Context, resp *http.Response, err error) (bool, error) {
+func (f *Fs) shouldRetryChunkMerge(ctx context.Context, resp *http.Response, err error, sleepTime *time.Duration, wasLocked *bool) (bool, error) {
 	// Not found. Can be returned by NextCloud when merging chunks of an upload.
 	if resp != nil && resp.StatusCode == 404 {
+		if *wasLocked {
+			// Assume a 404 error after we've received a 423 error is actually a success
+			return false, nil
+		}
 		return true, err
 	}
 
 	// 423 LOCKED
 	if resp != nil && resp.StatusCode == 423 {
-		return false, fmt.Errorf("merging the uploaded chunks failed with 423 LOCKED. This usually happens when the chunks merging is still in progress on NextCloud, but it may also indicate a failed transfer: %w", err)
+		*wasLocked = true
+		fs.Logf(f, "Sleeping for %v to wait for chunks to be merged after 423 error", *sleepTime)
+		time.Sleep(*sleepTime)
+		*sleepTime *= 2
+		return true, fmt.Errorf("merging the uploaded chunks failed with 423 LOCKED. This usually happens when the chunks merging is still in progress on NextCloud, but it may also indicate a failed transfer: %w", err)
 	}
 
 	return f.shouldRetry(ctx, resp, err)
@@ -39,10 +47,6 @@ func (f *Fs) shouldRetryChunkMerge(ctx context.Context, resp *http.Response, err
 func (f *Fs) setUploadChunkSize(cs fs.SizeSuffix) (old fs.SizeSuffix, err error) {
 	old, f.opt.ChunkSize = f.opt.ChunkSize, cs
 	return
-}
-
-func (f *Fs) getChunksUploadURL() string {
-	return strings.Replace(f.endpointURL, "/dav/files/", "/dav/uploads/", 1)
 }
 
 func (o *Object) getChunksUploadDir() (string, error) {
@@ -55,12 +59,16 @@ func (o *Object) getChunksUploadDir() (string, error) {
 	return uploadDir, nil
 }
 
-func (f *Fs) verifyChunkConfig() error {
-	if f.opt.ChunkSize != 0 && !validateNextCloudChunkedURL.MatchString(f.endpointURL) {
-		return errors.New("chunked upload with nextcloud must use /dav/files/USER endpoint not /webdav")
+func (f *Fs) getChunksUploadURL() (string, error) {
+	submatch := nextCloudURLRegex.FindStringSubmatch(f.endpointURL)
+	if submatch == nil {
+		return "", errors.New("the remote url looks incorrect. Note that nextcloud chunked uploads require you to use the /dav/files/USER endpoint instead of /webdav. Please check 'rclone config show remotename' to verify that the url field ends in /dav/files/USERNAME")
 	}
 
-	return nil
+	baseURL, user := submatch[1], submatch[2]
+	chunksUploadURL := fmt.Sprintf("%s/dav/uploads/%s/", baseURL, user)
+
+	return chunksUploadURL, nil
 }
 
 func (o *Object) shouldUseChunkedUpload(src fs.ObjectInfo) bool {
@@ -122,7 +130,7 @@ func (o *Object) uploadChunks(ctx context.Context, in0 io.Reader, size int64, pa
 
 		getBody := func() (io.ReadCloser, error) {
 			// RepeatableReader{} plays well with accounting so rewinding doesn't make the progress buggy
-			if _, err := in.Seek(0, io.SeekStart); err == nil {
+			if _, err := in.Seek(0, io.SeekStart); err != nil {
 				return nil, err
 			}
 
@@ -181,9 +189,11 @@ func (o *Object) mergeChunks(ctx context.Context, uploadDir string, options []fs
 	}
 	opts.ExtraHeaders = o.extraHeaders(ctx, src)
 	opts.ExtraHeaders["Destination"] = destinationURL.String()
+	sleepTime := 5 * time.Second
+	wasLocked := false
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
-		return o.fs.shouldRetryChunkMerge(ctx, resp, err)
+		return o.fs.shouldRetryChunkMerge(ctx, resp, err, &sleepTime, &wasLocked)
 	})
 	if err != nil {
 		return fmt.Errorf("finalize chunked upload failed, destinationURL: \"%s\": %w", destinationURL, err)
@@ -204,7 +214,7 @@ func (o *Object) purgeUploadedChunks(ctx context.Context, uploadDir string) erro
 		resp, err := o.fs.srv.CallXML(ctx, &opts, nil, nil)
 
 		// directory doesn't exist, no need to purge
-		if resp.StatusCode == http.StatusNotFound {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			return false, nil
 		}
 

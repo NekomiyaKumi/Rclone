@@ -20,15 +20,14 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.FVarP(cmdFlags, &expire, "expire", "", "The amount of time that the link will be valid")
-	flags.BoolVarP(cmdFlags, &unlink, "unlink", "", unlink, "Remove existing public link to file/folder")
+	flags.FVarP(cmdFlags, &expire, "expire", "", "The amount of time that the link will be valid", "")
+	flags.BoolVarP(cmdFlags, &unlink, "unlink", "", unlink, "Remove existing public link to file/folder", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "link remote:path",
 	Short: `Generate public link to file/folder.`,
-	Long: `rclone link will create, retrieve or remove a public link to the given
-file or folder.
+	Long: `Create, retrieve or remove a public link to the given file or folder.
 
     rclone link remote:path/to/file
     rclone link remote:path/to/folder/

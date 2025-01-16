@@ -19,15 +19,14 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &createEmptySrcDirs, "create-empty-src-dirs", "", createEmptySrcDirs, "Create empty source dirs on destination after copy")
+	flags.BoolVarP(cmdFlags, &createEmptySrcDirs, "create-empty-src-dirs", "", createEmptySrcDirs, "Create empty source dirs on destination after copy", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "copy source:path dest:path",
 	Short: `Copy files from source to dest, skipping identical files.`,
 	// Note: "|" will be replaced by backticks below
-	Long: strings.ReplaceAll(`
-Copy the source to the destination.  Does not transfer files that are
+	Long: strings.ReplaceAll(`Copy the source to the destination.  Does not transfer files that are
 identical on source and destination, testing by size and modification
 time or MD5SUM.  Doesn't delete files from the destination. If you
 want to also delete files from destination, to make it match source,
@@ -79,10 +78,22 @@ recently very efficiently like this:
 
     rclone copy --max-age 24h --no-traverse /path/to/src remote:
 
+
+Rclone will sync the modification times of files and directories if
+the backend supports it. If metadata syncing is required then use the
+|--metadata| flag.
+
+Note that the modification time and metadata for the root directory
+will **not** be synced. See https://github.com/rclone/rclone/issues/7652
+for more info.
+
 **Note**: Use the |-P|/|--progress| flag to view real-time transfer statistics.
 
 **Note**: Use the |--dry-run| or the |--interactive|/|-i| flag to test without copying anything.
 `, "|", "`"),
+	Annotations: map[string]string{
+		"groups": "Copy,Filter,Listing,Important",
+	},
 	Run: func(command *cobra.Command, args []string) {
 
 		cmd.CheckArgs(2, 2, command, args)
