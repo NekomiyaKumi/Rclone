@@ -4,11 +4,11 @@ package cat
 import (
 	"context"
 	"io"
-	"log"
 	"os"
 	"strings"
 
 	"github.com/rclone/rclone/cmd"
+	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/operations"
 	"github.com/spf13/cobra"
@@ -27,20 +27,19 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.Int64VarP(cmdFlags, &head, "head", "", head, "Only print the first N characters")
-	flags.Int64VarP(cmdFlags, &tail, "tail", "", tail, "Only print the last N characters")
-	flags.Int64VarP(cmdFlags, &offset, "offset", "", offset, "Start printing at offset N (or from end if -ve)")
-	flags.Int64VarP(cmdFlags, &count, "count", "", count, "Only print N characters")
-	flags.BoolVarP(cmdFlags, &discard, "discard", "", discard, "Discard the output instead of printing")
-	flags.StringVarP(cmdFlags, &separator, "separator", "", separator, "Separator to use between objects when printing multiple files")
+	flags.Int64VarP(cmdFlags, &head, "head", "", head, "Only print the first N characters", "")
+	flags.Int64VarP(cmdFlags, &tail, "tail", "", tail, "Only print the last N characters", "")
+	flags.Int64VarP(cmdFlags, &offset, "offset", "", offset, "Start printing at offset N (or from end if -ve)", "")
+	flags.Int64VarP(cmdFlags, &count, "count", "", count, "Only print N characters", "")
+	flags.BoolVarP(cmdFlags, &discard, "discard", "", discard, "Discard the output instead of printing", "")
+	flags.StringVarP(cmdFlags, &separator, "separator", "", separator, "Separator to use between objects when printing multiple files", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "cat remote:path",
 	Short: `Concatenates any files and sends them to stdout.`,
 	// Warning! "|" will be replaced by backticks below
-	Long: strings.ReplaceAll(`
-rclone cat sends any files to standard output.
+	Long: strings.ReplaceAll(`Sends any files to standard output.
 
 You can use it like this to output a single file
 
@@ -73,13 +72,14 @@ files, use:
 `, "|", "`"),
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.33",
+		"groups":            "Filter,Listing",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		usedOffset := offset != 0 || count >= 0
 		usedHead := head > 0
 		usedTail := tail > 0
 		if usedHead && usedTail || usedHead && usedOffset || usedTail && usedOffset {
-			log.Fatalf("Can only use one of  --head, --tail or --offset with --count")
+			fs.Fatalf(nil, "Can only use one of  --head, --tail or --offset with --count")
 		}
 		if head > 0 {
 			offset = 0

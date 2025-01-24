@@ -23,10 +23,9 @@ func init() {
 var commandDefinition = &cobra.Command{
 	Use:   "cryptcheck remote:path cryptedremote:path",
 	Short: `Cryptcheck checks the integrity of an encrypted remote.`,
-	Long: `
-rclone cryptcheck checks a remote against a [crypted](/crypt/) remote.
-This is the equivalent of running rclone [check](/commands/rclone_check/),
-but able to check the checksums of the encrypted remote.
+	Long: `Checks a remote against a [crypted](/crypt/) remote. This is the equivalent
+of running rclone [check](/commands/rclone_check/), but able to check the
+checksums of the encrypted remote.
 
 For it to work the underlying remote of the cryptedremote must support
 some kind of checksum.
@@ -49,6 +48,7 @@ After it has run it will log the status of the encryptedremote:.
 ` + check.FlagsHelp,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.36",
+		"groups":            "Filter,Listing,Check",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(2, 2, command, args)
@@ -103,7 +103,7 @@ func cryptCheck(ctx context.Context, fdst, fsrc fs.Fs) error {
 		}
 		if cryptHash != underlyingHash {
 			err = fmt.Errorf("hashes differ (%s:%s) %q vs (%s:%s) %q", fdst.Name(), fdst.Root(), cryptHash, fsrc.Name(), fsrc.Root(), underlyingHash)
-			fs.Errorf(src, err.Error())
+			fs.Errorf(src, "%s", err.Error())
 			return true, false, nil
 		}
 		return false, false, nil

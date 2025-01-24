@@ -10,11 +10,19 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
+	"github.com/rclone/rclone/fs/cache"
 	"github.com/rclone/rclone/fs/filter"
 	"github.com/rclone/rclone/fs/rc"
 )
+
+// Fill in these to avoid circular dependencies
+func init() {
+	cache.JobOnFinish = OnFinish
+	cache.JobGetJobID = GetJobID
+}
 
 // Job describes an asynchronous task started via the rc package
 type Job struct {
@@ -66,12 +74,6 @@ func (job *Job) finish(out rc.Params, err error) {
 	running.kickExpire() // make sure this job gets expired
 }
 
-func (job *Job) addListener(fn *func()) {
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	job.listeners = append(job.listeners, fn)
-}
-
 func (job *Job) removeListener(fn *func()) {
 	job.mu.Lock()
 	defer job.mu.Unlock()
@@ -81,6 +83,19 @@ func (job *Job) removeListener(fn *func()) {
 			return
 		}
 	}
+}
+
+// OnFinish adds listener to job that will be triggered when job is finished.
+// It returns a function to cancel listening.
+func (job *Job) OnFinish(fn func()) func() {
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if job.Finished {
+		go fn()
+	} else {
+		job.listeners = append(job.listeners, &fn)
+	}
+	return func() { job.removeListener(&fn) }
 }
 
 // run the job until completion writing the return status
@@ -102,15 +117,16 @@ type Jobs struct {
 }
 
 var (
-	running = newJobs()
-	jobID   = int64(0)
+	running   = newJobs()
+	jobID     atomic.Int64
+	executeID = uuid.New().String()
 )
 
 // newJobs makes a new Jobs structure
 func newJobs() *Jobs {
 	return &Jobs{
 		jobs: map[int64]*Job{},
-		opt:  &rc.DefaultOpt,
+		opt:  &rc.Opt,
 	}
 }
 
@@ -121,7 +137,7 @@ func SetOpt(opt *rc.Options) {
 
 // SetInitialJobID allows for setting jobID before starting any jobs.
 func SetInitialJobID(id int64) {
-	if !atomic.CompareAndSwapInt64(&jobID, 0, id) {
+	if !jobID.CompareAndSwap(0, id) {
 		panic("Setting jobID is only possible before starting any jobs")
 	}
 }
@@ -237,9 +253,14 @@ func getFilter(ctx context.Context, in rc.Params) (context.Context, error) {
 	return ctx, nil
 }
 
+type jobKeyType struct{}
+
+// Key for adding jobs to ctx
+var jobKey = jobKeyType{}
+
 // NewJob creates a Job and executes it, possibly in the background if _async is set
 func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Job, out rc.Params, err error) {
-	id := atomic.AddInt64(&jobID, 1)
+	id := jobID.Add(1)
 	in = in.Copy() // copy input so we can change it
 
 	ctx, isAsync, err := getAsync(ctx, in)
@@ -274,9 +295,14 @@ func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Jo
 		StartTime: time.Now(),
 		Stop:      stop,
 	}
+
 	jobs.mu.Lock()
 	jobs.jobs[job.ID] = job
 	jobs.mu.Unlock()
+
+	// Add the job to the context
+	ctx = context.WithValue(ctx, jobKey, job)
+
 	if isAsync {
 		go job.run(ctx, fn, in)
 		out = make(rc.Params)
@@ -303,12 +329,22 @@ func OnFinish(jobID int64, fn func()) (func(), error) {
 	if job == nil {
 		return func() {}, errors.New("job not found")
 	}
-	if job.Finished {
-		fn()
-	} else {
-		job.addListener(&fn)
+	return job.OnFinish(fn), nil
+}
+
+// GetJob gets the Job from the context if possible
+func GetJob(ctx context.Context) (job *Job, ok bool) {
+	job, ok = ctx.Value(jobKey).(*Job)
+	return job, ok
+}
+
+// GetJobID gets the Job from the context if possible
+func GetJobID(ctx context.Context) (jobID int64, ok bool) {
+	job, ok := GetJob(ctx)
+	if !ok {
+		return -1, ok
 	}
-	return func() { job.removeListener(&fn) }, nil
+	return job.ID, true
 }
 
 func init() {
@@ -365,7 +401,8 @@ func init() {
 
 Results:
 
-- jobids - array of integer job ids.
+- executeId - string id of rclone executing (change after restart)
+- jobids - array of integer job ids (starting at 1 on each restart)
 `,
 	})
 }
@@ -374,6 +411,7 @@ Results:
 func rcJobList(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	out = make(rc.Params)
 	out["jobids"] = running.IDs()
+	out["executeId"] = executeID
 	return out, nil
 }
 

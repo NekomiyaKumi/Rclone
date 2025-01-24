@@ -35,6 +35,7 @@ import (
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/pacer"
@@ -132,42 +133,50 @@ func init() {
 			}
 			return nil, fmt.Errorf("unknown state %q", config.State)
 		}, Options: []fs.Option{{
-			Name: "app_id",
-			Help: "Sugarsync App ID.\n\nLeave blank to use rclone's.",
+			Name:      "app_id",
+			Help:      "Sugarsync App ID.\n\nLeave blank to use rclone's.",
+			Sensitive: true,
 		}, {
-			Name: "access_key_id",
-			Help: "Sugarsync Access Key ID.\n\nLeave blank to use rclone's.",
+			Name:      "access_key_id",
+			Help:      "Sugarsync Access Key ID.\n\nLeave blank to use rclone's.",
+			Sensitive: true,
 		}, {
-			Name: "private_access_key",
-			Help: "Sugarsync Private Access Key.\n\nLeave blank to use rclone's.",
+			Name:      "private_access_key",
+			Help:      "Sugarsync Private Access Key.\n\nLeave blank to use rclone's.",
+			Sensitive: true,
 		}, {
 			Name:    "hard_delete",
 			Help:    "Permanently delete files if true\notherwise put them in the deleted files.",
 			Default: false,
 		}, {
-			Name:     "refresh_token",
-			Help:     "Sugarsync refresh token.\n\nLeave blank normally, will be auto configured by rclone.",
-			Advanced: true,
+			Name:      "refresh_token",
+			Help:      "Sugarsync refresh token.\n\nLeave blank normally, will be auto configured by rclone.",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
-			Name:     "authorization",
-			Help:     "Sugarsync authorization.\n\nLeave blank normally, will be auto configured by rclone.",
-			Advanced: true,
+			Name:      "authorization",
+			Help:      "Sugarsync authorization.\n\nLeave blank normally, will be auto configured by rclone.",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
 			Name:     "authorization_expiry",
 			Help:     "Sugarsync authorization expiry.\n\nLeave blank normally, will be auto configured by rclone.",
 			Advanced: true,
 		}, {
-			Name:     "user",
-			Help:     "Sugarsync user.\n\nLeave blank normally, will be auto configured by rclone.",
-			Advanced: true,
+			Name:      "user",
+			Help:      "Sugarsync user.\n\nLeave blank normally, will be auto configured by rclone.",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
-			Name:     "root_id",
-			Help:     "Sugarsync root id.\n\nLeave blank normally, will be auto configured by rclone.",
-			Advanced: true,
+			Name:      "root_id",
+			Help:      "Sugarsync root id.\n\nLeave blank normally, will be auto configured by rclone.",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
-			Name:     "deleted_id",
-			Help:     "Sugarsync deleted folder id.\n\nLeave blank normally, will be auto configured by rclone.",
-			Advanced: true,
+			Name:      "deleted_id",
+			Help:      "Sugarsync deleted folder id.\n\nLeave blank normally, will be auto configured by rclone.",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
@@ -859,13 +868,13 @@ func (f *Fs) Precision() time.Duration {
 // Will only be called if src.Fs().Name() == f.Name()
 //
 // If it isn't possible then return fs.ErrorCantCopy
-func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (dst fs.Object, err error) {
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't copy - not same remote type")
 		return nil, fs.ErrorCantCopy
 	}
-	err := srcObj.readMetaData(ctx)
+	err = srcObj.readMetaData(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -881,6 +890,13 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	if err != nil {
 		return nil, err
 	}
+
+	// Find and remove existing object
+	cleanup, err := operations.RemoveExisting(ctx, f, remote, "server side copy")
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup(&err)
 
 	// Copy the object
 	opts := rest.Opts{
