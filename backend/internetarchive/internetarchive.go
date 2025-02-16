@@ -133,11 +133,13 @@ Owner is able to add custom keys. Metadata feature grabs all the keys including 
 		},
 
 		Options: []fs.Option{{
-			Name: "access_key_id",
-			Help: "IAS3 Access Key.\n\nLeave blank for anonymous access.\nYou can find one here: https://archive.org/account/s3.php",
+			Name:      "access_key_id",
+			Help:      "IAS3 Access Key.\n\nLeave blank for anonymous access.\nYou can find one here: https://archive.org/account/s3.php",
+			Sensitive: true,
 		}, {
-			Name: "secret_access_key",
-			Help: "IAS3 Secret Key (password).\n\nLeave blank for anonymous access.",
+			Name:      "secret_access_key",
+			Help:      "IAS3 Secret Key (password).\n\nLeave blank for anonymous access.",
+			Sensitive: true,
 		}, {
 			// their official client (https://github.com/jjjake/internetarchive) hardcodes following the two
 			Name:     "endpoint",
@@ -149,6 +151,19 @@ Owner is able to add custom keys. Metadata feature grabs all the keys including 
 			Help:     "Host of InternetArchive Frontend.\n\nLeave blank for default value.",
 			Default:  "https://archive.org",
 			Advanced: true,
+		}, {
+			Name: "item_metadata",
+			Help: `Metadata to be set on the IA item, this is different from file-level metadata that can be set using --metadata-set.
+Format is key=value and the 'x-archive-meta-' prefix is automatically added.`,
+			Default:  []string{},
+			Hide:     fs.OptionHideConfigurator,
+			Advanced: true,
+		}, {
+			Name: "item_derive",
+			Help: `Whether to trigger derive on the IA item or not. If set to false, the item will not be derived by IA upon upload.
+The derive process produces a number of secondary files from an upload to make an upload more usable on the web.
+Setting this to false is useful for uploading files that are already in a format that IA can display or reduce burden on IA's infrastructure.`,
+			Default: true,
 		}, {
 			Name: "disable_checksum",
 			Help: `Don't ask the server to test against MD5 checksum calculated by rclone.
@@ -199,6 +214,8 @@ type Options struct {
 	Endpoint        string               `config:"endpoint"`
 	FrontEndpoint   string               `config:"front_endpoint"`
 	DisableChecksum bool                 `config:"disable_checksum"`
+	ItemMetadata    []string             `config:"item_metadata"`
+	ItemDerive      bool                 `config:"item_derive"`
 	WaitArchive     fs.Duration          `config:"wait_archive"`
 	Enc             encoder.MultiEncoder `config:"encoding"`
 }
@@ -788,19 +805,25 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		"x-amz-filemeta-rclone-update-track": updateTracker,
 
 		// we add some more headers for intuitive actions
-		"x-amz-auto-make-bucket":     "1",    // create an item if does not exist, do nothing if already
-		"x-archive-auto-make-bucket": "1",    // same as above in IAS3 original way
-		"x-archive-keep-old-version": "0",    // do not keep old versions (a.k.a. trashes in other clouds)
-		"x-archive-meta-mediatype":   "data", // mark media type of the uploading file as "data"
-		"x-archive-queue-derive":     "0",    // skip derivation process (e.g. encoding to smaller files, OCR on PDFs)
-		"x-archive-cascade-delete":   "1",    // enable "cascate delete" (delete all derived files in addition to the file itself)
+		"x-amz-auto-make-bucket":     "1", // create an item if does not exist, do nothing if already
+		"x-archive-auto-make-bucket": "1", // same as above in IAS3 original way
+		"x-archive-keep-old-version": "0", // do not keep old versions (a.k.a. trashes in other clouds)
+		"x-archive-cascade-delete":   "1", // enable "cascate delete" (delete all derived files in addition to the file itself)
 	}
+
 	if size >= 0 {
 		headers["Content-Length"] = fmt.Sprintf("%d", size)
 		headers["x-archive-size-hint"] = fmt.Sprintf("%d", size)
 	}
+
+	// This is IA's ITEM metadata, not file metadata
+	headers, err = o.appendItemMetadataHeaders(headers, o.fs.opt)
+	if err != nil {
+		return err
+	}
+
 	var mdata fs.Metadata
-	mdata, err = fs.GetMetadataOptions(ctx, src, options)
+	mdata, err = fs.GetMetadataOptions(ctx, o.fs, src, options)
 	if err == nil && mdata != nil {
 		for mk, mv := range mdata {
 			mk = strings.ToLower(mk)
@@ -859,6 +882,51 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	o.modTime = newObj.modTime
 	o.size = newObj.size
 	return err
+}
+
+func (o *Object) appendItemMetadataHeaders(headers map[string]string, options Options) (newHeaders map[string]string, err error) {
+	metadataCounter := make(map[string]int)
+	metadataValues := make(map[string][]string)
+
+	// First pass: count occurrences and collect values
+	for _, v := range options.ItemMetadata {
+		parts := strings.SplitN(v, "=", 2)
+		if len(parts) != 2 {
+			return newHeaders, errors.New("item metadata key=value should be in the form key=value")
+		}
+		key, value := parts[0], parts[1]
+		metadataCounter[key]++
+		metadataValues[key] = append(metadataValues[key], value)
+	}
+
+	// Second pass: add headers with appropriate prefixes
+	for key, count := range metadataCounter {
+		if count == 1 {
+			// Only one occurrence, use x-archive-meta-
+			headers[fmt.Sprintf("x-archive-meta-%s", key)] = metadataValues[key][0]
+		} else {
+			// Multiple occurrences, use x-archive-meta01-, x-archive-meta02-, etc.
+			for i, value := range metadataValues[key] {
+				headers[fmt.Sprintf("x-archive-meta%02d-%s", i+1, key)] = value
+			}
+		}
+	}
+
+	if o.fs.opt.ItemDerive {
+		headers["x-archive-queue-derive"] = "1"
+	} else {
+		headers["x-archive-queue-derive"] = "0"
+	}
+
+	fs.Debugf(o, "Setting IA item derive: %t", o.fs.opt.ItemDerive)
+
+	for k, v := range headers {
+		if strings.HasPrefix(k, "x-archive-meta") {
+			fs.Debugf(o, "Setting IA item metadata: %s=%s", k, v)
+		}
+	}
+
+	return headers, nil
 }
 
 // Remove an object

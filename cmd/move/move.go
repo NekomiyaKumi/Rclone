@@ -21,16 +21,15 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &deleteEmptySrcDirs, "delete-empty-src-dirs", "", deleteEmptySrcDirs, "Delete empty source dirs after move")
-	flags.BoolVarP(cmdFlags, &createEmptySrcDirs, "create-empty-src-dirs", "", createEmptySrcDirs, "Create empty source dirs on destination after move")
+	flags.BoolVarP(cmdFlags, &deleteEmptySrcDirs, "delete-empty-src-dirs", "", deleteEmptySrcDirs, "Delete empty source dirs after move", "")
+	flags.BoolVarP(cmdFlags, &createEmptySrcDirs, "create-empty-src-dirs", "", createEmptySrcDirs, "Create empty source dirs on destination after move", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "move source:path dest:path",
 	Short: `Move files from source to dest.`,
 	// Warning! "|" will be replaced by backticks below
-	Long: strings.ReplaceAll(`
-Moves the contents of the source directory to the destination
+	Long: strings.ReplaceAll(`Moves the contents of the source directory to the destination
 directory. Rclone will error if the source and destination overlap and
 the remote does not support a server-side directory move operation.
 
@@ -55,6 +54,14 @@ whether rclone lists the destination directory or not.  Supplying this
 option when moving a small number of files into a large destination
 can speed transfers up greatly.
 
+Rclone will sync the modification times of files and directories if
+the backend supports it. If metadata syncing is required then use the
+|--metadata| flag.
+
+Note that the modification time and metadata for the root directory
+will **not** be synced. See https://github.com/rclone/rclone/issues/7652
+for more info.
+
 **Important**: Since this can cause data loss, test first with the
 |--dry-run| or the |--interactive|/|-i| flag.
 
@@ -62,6 +69,7 @@ can speed transfers up greatly.
 `, "|", "`"),
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.19",
+		"groups":            "Filter,Listing,Important,Copy",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(2, 2, command, args)

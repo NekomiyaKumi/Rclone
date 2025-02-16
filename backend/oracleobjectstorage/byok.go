@@ -1,5 +1,4 @@
 //go:build !plan9 && !solaris && !js
-// +build !plan9,!solaris,!js
 
 package oracleobjectstorage
 
@@ -13,7 +12,6 @@ import (
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/objectstorage"
-	"github.com/oracle/oci-go-sdk/v65/objectstorage/transfer"
 )
 
 const (
@@ -60,12 +58,10 @@ func populateSSECustomerKeys(opt *Options) error {
 		sha256Checksum := base64.StdEncoding.EncodeToString(getSha256(decoded))
 		if opt.SSECustomerKeySha256 == "" {
 			opt.SSECustomerKeySha256 = sha256Checksum
-		} else {
-			if opt.SSECustomerKeySha256 != sha256Checksum {
-				return fmt.Errorf("the computed SHA256 checksum "+
-					"(%v) of the key doesn't match the config entry sse_customer_key_sha256=(%v)",
-					sha256Checksum, opt.SSECustomerKeySha256)
-			}
+		} else if opt.SSECustomerKeySha256 != sha256Checksum {
+			return fmt.Errorf("the computed SHA256 checksum "+
+				"(%v) of the key doesn't match the config entry sse_customer_key_sha256=(%v)",
+				sha256Checksum, opt.SSECustomerKeySha256)
 		}
 		if opt.SSECustomerAlgorithm == "" {
 			opt.SSECustomerAlgorithm = sseDefaultAlgorithm
@@ -115,21 +111,6 @@ func useBYOKGetObject(fs *Fs, request *objectstorage.GetObjectRequest) {
 }
 
 func useBYOKCopyObject(fs *Fs, request *objectstorage.CopyObjectRequest) {
-	if fs.opt.SSEKMSKeyID != "" {
-		request.OpcSseKmsKeyId = common.String(fs.opt.SSEKMSKeyID)
-	}
-	if fs.opt.SSECustomerAlgorithm != "" {
-		request.OpcSseCustomerAlgorithm = common.String(fs.opt.SSECustomerAlgorithm)
-	}
-	if fs.opt.SSECustomerKey != "" {
-		request.OpcSseCustomerKey = common.String(fs.opt.SSECustomerKey)
-	}
-	if fs.opt.SSECustomerKeySha256 != "" {
-		request.OpcSseCustomerKeySha256 = common.String(fs.opt.SSECustomerKeySha256)
-	}
-}
-
-func useBYOKUpload(fs *Fs, request *transfer.UploadRequest) {
 	if fs.opt.SSEKMSKeyID != "" {
 		request.OpcSseKmsKeyId = common.String(fs.opt.SSEKMSKeyID)
 	}

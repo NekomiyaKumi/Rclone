@@ -7,6 +7,7 @@ conversion into man pages etc.
 import os
 import re
 import time
+import subprocess
 from datetime import datetime
 
 docpath = "docs/content"
@@ -25,23 +26,26 @@ docs = [
     "flags.md",
     "docker.md",
     "bisync.md",
+    "release_signing.md",
 
     # Keep these alphabetical by full name
     "fichier.md",
     "alias.md",
-    "amazonclouddrive.md",
     "s3.md",
     "b2.md",
     "box.md",
     "cache.md",
     "chunker.md",
+    "cloudinary.md",
     "sharefile.md",
     "crypt.md",
     "compress.md",
     "combine.md",
     "dropbox.md",
     "filefabric.md",
+    "filescom.md",
     "ftp.md",
+    "gofile.md",
     "googlecloudstorage.md",
     "drive.md",
     "googlephotos.md",
@@ -49,30 +53,38 @@ docs = [
     "hdfs.md",
     "hidrive.md",
     "http.md",
+    "imagekit.md",
+    "iclouddrive.md",
     "internetarchive.md",
     "jottacloud.md",
     "koofr.md",
+    "linkbox.md",
     "mailru.md",
     "mega.md",
     "memory.md",
     "netstorage.md",
     "azureblob.md",
+    "azurefiles.md",
     "onedrive.md",
     "opendrive.md",
-    "oracleobjectstorage.md",
+    "oracleobjectstorage/_index.md",
     "qingstor.md",
+    "quatrix.md",
     "sia.md",
     "swift.md",
     "pcloud.md",
     "pikpak.md",
+    "pixeldrain.md",
     "premiumizeme.md",
+    "protondrive.md",
     "putio.md",
+    "protondrive.md",
     "seafile.md",
     "sftp.md",
     "smb.md",
     "storj.md",
     "sugarsync.md",
-    "tardigrade.md",            # stub only to redirect to storj.md
+    "ulozto.md",
     "uptobox.md",
     "union.md",
     "webdav.md",
@@ -114,7 +126,8 @@ commands_order = [
 ignore_docs = [
     "downloads.md",
     "privacy.md",
-    "donate.md",
+    "sponsor.md",
+    "amazonclouddrive.md",
 ]
 
 def read_doc(doc):
@@ -148,6 +161,7 @@ def read_doc(doc):
 def check_docs(docpath):
     """Check all the docs are in docpath"""
     files = set(f for f in os.listdir(docpath) if f.endswith(".md"))
+    files.update(f for f in docs if os.path.exists(os.path.join(docpath,f)))
     files -= set(ignore_docs)
     docs_set = set(docs)
     if files == docs_set:
@@ -179,13 +193,23 @@ def main():
     command_docs = read_commands(docpath).replace("\\", "\\\\") # escape \ so we can use command_docs in re.sub
     build_date = datetime.utcfromtimestamp(
             int(os.environ.get('SOURCE_DATE_EPOCH', time.time())))
+    help_output = subprocess.check_output(["rclone", "help"]).decode("utf-8")
     with open(outfile, "w") as out:
         out.write("""\
 %% rclone(1) User Manual
 %% Nick Craig-Wood
 %% %s
 
-""" % build_date.strftime("%b %d, %Y"))
+# NAME
+
+rclone - manage files on cloud storage
+
+# SYNOPSIS
+
+```
+%s
+```
+""" % (build_date.strftime("%b %d, %Y"), help_output))
         for doc in docs:
             contents = read_doc(doc)
             # Substitute the commands into doc.md

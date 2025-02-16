@@ -1,11 +1,13 @@
 //go:build linux
-// +build linux
 
 package local
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/rclone/rclone/fs"
@@ -17,13 +19,29 @@ var (
 	readMetadataFromFileFn func(o *Object, m *fs.Metadata) (err error)
 )
 
+// Read the time specified from the os.FileInfo
+func readTime(t timeType, fi os.FileInfo) time.Time {
+	stat, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		fs.Debugf(nil, "didn't return Stat_t as expected")
+		return fi.ModTime()
+	}
+	switch t {
+	case aTime:
+		return time.Unix(stat.Atim.Unix())
+	case cTime:
+		return time.Unix(stat.Ctim.Unix())
+	}
+	return fi.ModTime()
+}
+
 // Read the metadata from the file into metadata where possible
 func (o *Object) readMetadataFromFile(m *fs.Metadata) (err error) {
 	statxCheckOnce.Do(func() {
 		// Check statx() is available as it was only introduced in kernel 4.11
 		// If not, fall back to fstatat() which was introduced in 2.6.16 which is guaranteed for all Go versions
 		var stat unix.Statx_t
-		if unix.Statx(unix.AT_FDCWD, ".", 0, unix.STATX_ALL, &stat) != unix.ENOSYS {
+		if runtime.GOOS != "android" && unix.Statx(unix.AT_FDCWD, ".", 0, unix.STATX_ALL, &stat) != unix.ENOSYS {
 			readMetadataFromFileFn = readMetadataFromFileStatx
 		} else {
 			readMetadataFromFileFn = readMetadataFromFileFstatat

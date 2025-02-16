@@ -1,5 +1,4 @@
 //go:build !plan9
-// +build !plan9
 
 // Package sftp provides a filesystem interface using github.com/pkg/sftp
 package sftp
@@ -27,7 +26,6 @@ import (
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/config/obscure"
-	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/env"
 	"github.com/rclone/rclone/lib/pacer"
@@ -59,13 +57,15 @@ func init() {
 		Description: "SSH/SFTP",
 		NewFs:       NewFs,
 		Options: []fs.Option{{
-			Name:     "host",
-			Help:     "SSH host to connect to.\n\nE.g. \"example.com\".",
-			Required: true,
+			Name:      "host",
+			Help:      "SSH host to connect to.\n\nE.g. \"example.com\".",
+			Required:  true,
+			Sensitive: true,
 		}, {
-			Name:    "user",
-			Help:    "SSH username.",
-			Default: currentUser,
+			Name:      "user",
+			Help:      "SSH username.",
+			Default:   currentUser,
+			Sensitive: true,
 		}, {
 			Name:    "port",
 			Help:    "SSH port number.",
@@ -76,7 +76,18 @@ func init() {
 			IsPassword: true,
 		}, {
 			Name: "key_pem",
-			Help: "Raw PEM-encoded private key.\n\nIf specified, will override key_file parameter.",
+			Help: `Raw PEM-encoded private key.
+
+Note that this should be on a single line with line endings replaced with '\n', eg
+
+    key_pem = -----BEGIN RSA PRIVATE KEY-----\nMaMbaIXtE\n0gAMbMbaSsd\nMbaass\n-----END RSA PRIVATE KEY-----
+
+This will generate the single line correctly:
+
+    awk '{printf "%s\\n", $0}' < ~/.ssh/id_rsa
+
+If specified, it will override the key_file parameter.`,
+			Sensitive: true,
 		}, {
 			Name: "key_file",
 			Help: "Path to PEM-encoded private key file.\n\nLeave blank or set key-use-agent to use ssh-agent." + env.ShellExpandHelp,
@@ -87,6 +98,12 @@ func init() {
 Only PEM encrypted key files (old OpenSSH format) are supported. Encrypted keys
 in the new OpenSSH format can't be used.`,
 			IsPassword: true,
+			Sensitive:  true,
+		}, {
+			Name: "pubkey",
+			Help: `SSH public certificate for public certificate based authentication.
+Set this if you have a signed certificate you want to use for authentication.
+If specified will override pubkey_file.`,
 		}, {
 			Name: "pubkey_file",
 			Help: `Optional path to public key file.
@@ -165,7 +182,19 @@ E.g. if shared folders can be found in directories representing volumes:
 
 E.g. if home directory can be found in a shared folder called "home":
 
-    rclone sync /home/local/directory remote:/home/directory --sftp-path-override /volume1/homes/USER/directory`,
+    rclone sync /home/local/directory remote:/home/directory --sftp-path-override /volume1/homes/USER/directory
+	
+To specify only the path to the SFTP remote's root, and allow rclone to add any relative subpaths automatically (including unwrapping/decrypting remotes as necessary), add the '@' character to the beginning of the path.
+
+E.g. the first example above could be rewritten as:
+
+	rclone sync /home/local/directory remote:/directory --sftp-path-override @/volume2
+	
+Note that when using this method with Synology "home" folders, the full "/homes/USER" path should be specified instead of "/home".
+
+E.g. the second example above should be rewritten as:
+
+	rclone sync /home/local/directory remote:/homes/USER/directory --sftp-path-override @/volume1`,
 			Advanced: true,
 		}, {
 			Name:     "set_modtime",
@@ -217,7 +246,16 @@ E.g. if home directory can be found in a shared folder called "home":
 			Default: "",
 			Help: `Specifies the path or command to run a sftp server on the remote host.
 
-The subsystem option is ignored when server_command is defined.`,
+The subsystem option is ignored when server_command is defined.
+
+If adding server_command to the configuration file please note that 
+it should not be enclosed in quotes, since that will make rclone fail.
+
+A working example is:
+
+    [remote_name]
+    type = sftp
+    server_command = sudo /usr/libexec/openssh/sftp-server`,
 			Advanced: true,
 		}, {
 			Name:    "use_fstat",
@@ -310,6 +348,25 @@ cost of using more memory.
 			Default:  64,
 			Advanced: true,
 		}, {
+			Name: "connections",
+			Help: strings.ReplaceAll(`Maximum number of SFTP simultaneous connections, 0 for unlimited.
+
+Note that setting this is very likely to cause deadlocks so it should
+be used with care.
+
+If you are doing a sync or copy then make sure connections is one more
+than the sum of |--transfers| and |--checkers|.
+
+If you use |--check-first| then it just needs to be one more than the
+maximum of |--checkers| and |--transfers|.
+
+So for |connections 3| you'd use |--checkers 2 --transfers 2
+--check-first| or |--checkers 1 --transfers 1|.
+
+`, "|", "`"),
+			Default:  0,
+			Advanced: true,
+		}, {
 			Name:    "set_env",
 			Default: fs.SpaceSepList{},
 			Help: `Environment variables to pass to sftp and commands
@@ -384,6 +441,67 @@ Example:
     ssh-ed25519 ssh-rsa ssh-dss
 `,
 			Advanced: true,
+		}, {
+			Name:    "ssh",
+			Default: fs.SpaceSepList{},
+			Help: `Path and arguments to external ssh binary.
+
+Normally rclone will use its internal ssh library to connect to the
+SFTP server. However it does not implement all possible ssh options so
+it may be desirable to use an external ssh binary.
+
+Rclone ignores all the internal config if you use this option and
+expects you to configure the ssh binary with the user/host/port and
+any other options you need.
+
+**Important** The ssh command must log in without asking for a
+password so needs to be configured with keys or certificates.
+
+Rclone will run the command supplied either with the additional
+arguments "-s sftp" to access the SFTP subsystem or with commands such
+as "md5sum /path/to/file" appended to read checksums.
+
+Any arguments with spaces in should be surrounded by "double quotes".
+
+An example setting might be:
+
+    ssh -o ServerAliveInterval=20 user@example.com
+
+Note that when using an external ssh binary rclone makes a new ssh
+connection for every hash it calculates.
+`,
+		}, {
+			Name:    "socks_proxy",
+			Default: "",
+			Help: `Socks 5 proxy host.
+	
+Supports the format user:pass@host:port, user@host:port, host:port.
+
+Example:
+
+	myUser:myPass@localhost:9005
+	`,
+			Advanced: true,
+		}, {
+			Name:    "copy_is_hardlink",
+			Default: false,
+			Help: `Set to enable server side copies using hardlinks.
+
+The SFTP protocol does not define a copy command so normally server
+side copies are not allowed with the sftp backend.
+
+However the SFTP protocol does support hardlinking, and if you enable
+this flag then the sftp backend will support server side copies. These
+will be implemented by doing a hardlink from the source to the
+destination.
+
+Not all sftp servers support this.
+
+Note that hardlinking two files together will use no additional space
+as the source and the destination will be the same file.
+
+This feature may be useful backups made with --copy-dest.`,
+			Advanced: true,
 		}},
 	}
 	fs.Register(fsi)
@@ -398,6 +516,7 @@ type Options struct {
 	KeyPem                  string          `config:"key_pem"`
 	KeyFile                 string          `config:"key_file"`
 	KeyFilePass             string          `config:"key_file_pass"`
+	PubKey                  string          `config:"pubkey"`
 	PubKeyFile              string          `config:"pubkey_file"`
 	KnownHostsFile          string          `config:"known_hosts_file"`
 	KeyUseAgent             bool            `config:"key_use_agent"`
@@ -418,11 +537,15 @@ type Options struct {
 	IdleTimeout             fs.Duration     `config:"idle_timeout"`
 	ChunkSize               fs.SizeSuffix   `config:"chunk_size"`
 	Concurrency             int             `config:"concurrency"`
+	Connections             int             `config:"connections"`
 	SetEnv                  fs.SpaceSepList `config:"set_env"`
 	Ciphers                 fs.SpaceSepList `config:"ciphers"`
 	KeyExchange             fs.SpaceSepList `config:"key_exchange"`
 	MACs                    fs.SpaceSepList `config:"macs"`
 	HostKeyAlgorithms       fs.SpaceSepList `config:"host_key_algorithms"`
+	SSH                     fs.SpaceSepList `config:"ssh"`
+	SocksProxy              string          `config:"socks_proxy"`
+	CopyIsHardlink          bool            `config:"copy_is_hardlink"`
 }
 
 // Fs stores the interface to the remote SFTP files
@@ -445,7 +568,8 @@ type Fs struct {
 	drain        *time.Timer // used to drain the pool when we stop using the connections
 	pacer        *fs.Pacer   // pacer for operations
 	savedpswd    string
-	sessions     int32 // count in use sessions
+	sessions     atomic.Int32 // count in use sessions
+	tokens       *pacer.TokenDispenser
 }
 
 // Object is a remote SFTP file that has been stat'd (so it exists, but is not necessarily open for reading)
@@ -453,47 +577,22 @@ type Object struct {
 	fs      *Fs
 	remote  string
 	size    int64       // size of the object
-	modTime time.Time   // modification time of the object
+	modTime uint32      // modification time of the object as unix time
 	mode    os.FileMode // mode bits from the file
 	md5sum  *string     // Cached MD5 checksum
 	sha1sum *string     // Cached SHA1 checksum
 }
 
-// dial starts a client connection to the given SSH server. It is a
-// convenience function that connects to the given network address,
-// initiates the SSH handshake, and then sets up a Client.
-func (f *Fs) dial(ctx context.Context, network, addr string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
-	dialer := fshttp.NewDialer(ctx)
-	conn, err := dialer.Dial(network, addr)
-	if err != nil {
-		return nil, err
-	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
-	if err != nil {
-		return nil, err
-	}
-	fs.Debugf(f, "New connection %s->%s to %q", c.LocalAddr(), c.RemoteAddr(), c.ServerVersion())
-	return ssh.NewClient(c, chans, reqs), nil
-}
-
 // conn encapsulates an ssh client and corresponding sftp client
 type conn struct {
-	sshClient  *ssh.Client
+	sshClient  sshClient
 	sftpClient *sftp.Client
 	err        chan error
 }
 
 // Wait for connection to close
 func (c *conn) wait() {
-	c.err <- c.sshClient.Conn.Wait()
-}
-
-// Send a keepalive over the ssh connection
-func (c *conn) sendKeepAlive() {
-	_, _, err := c.sshClient.SendRequest("keepalive@openssh.com", true, nil)
-	if err != nil {
-		fs.Debugf(nil, "Failed to send keep alive: %v", err)
-	}
+	c.err <- c.sshClient.Wait()
 }
 
 // Send keepalives every interval over the ssh connection until done is closed
@@ -505,7 +604,7 @@ func (c *conn) sendKeepAlives(interval time.Duration) (done chan struct{}) {
 		for {
 			select {
 			case <-t.C:
-				c.sendKeepAlive()
+				c.sshClient.SendKeepAlive()
 			case <-done:
 				return
 			}
@@ -538,17 +637,17 @@ func (c *conn) closed() error {
 //
 // Call removeSession() when done
 func (f *Fs) addSession() {
-	atomic.AddInt32(&f.sessions, 1)
+	f.sessions.Add(1)
 }
 
 // Show the ssh session is no longer in use
 func (f *Fs) removeSession() {
-	atomic.AddInt32(&f.sessions, -1)
+	f.sessions.Add(-1)
 }
 
 // getSessions shows whether there are any sessions in use
 func (f *Fs) getSessions() int32 {
-	return atomic.LoadInt32(&f.sessions)
+	return f.sessions.Load()
 }
 
 // Open a new connection to the SFTP server.
@@ -557,7 +656,11 @@ func (f *Fs) sftpConnection(ctx context.Context) (c *conn, err error) {
 	c = &conn{
 		err: make(chan error, 1),
 	}
-	c.sshClient, err = f.dial(ctx, "tcp", f.opt.Host+":"+f.opt.Port, f.config)
+	if len(f.opt.SSH) == 0 {
+		c.sshClient, err = f.newSSHClientInternal(ctx, "tcp", f.opt.Host+":"+f.opt.Port, f.config)
+	} else {
+		c.sshClient, err = f.newSSHClientExternal()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("couldn't connect SSH: %w", err)
 	}
@@ -571,7 +674,7 @@ func (f *Fs) sftpConnection(ctx context.Context) (c *conn, err error) {
 }
 
 // Set any environment variables on the ssh.Session
-func (f *Fs) setEnv(s *ssh.Session) error {
+func (f *Fs) setEnv(s sshSession) error {
 	for _, env := range f.opt.SetEnv {
 		equal := strings.IndexRune(env, '=')
 		if equal < 0 {
@@ -588,8 +691,8 @@ func (f *Fs) setEnv(s *ssh.Session) error {
 
 // Creates a new SFTP client on conn, using the specified subsystem
 // or sftp server, and zero or more option functions
-func (f *Fs) newSftpClient(conn *ssh.Client, opts ...sftp.ClientOption) (*sftp.Client, error) {
-	s, err := conn.NewSession()
+func (f *Fs) newSftpClient(client sshClient, opts ...sftp.ClientOption) (*sftp.Client, error) {
+	s, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -629,6 +732,9 @@ func (f *Fs) newSftpClient(conn *ssh.Client, opts ...sftp.ClientOption) (*sftp.C
 // Get an SFTP connection from the pool, or open a new one
 func (f *Fs) getSftpConnection(ctx context.Context) (c *conn, err error) {
 	accounting.LimitTPS(ctx)
+	if f.opt.Connections > 0 {
+		f.tokens.Get()
+	}
 	f.poolMu.Lock()
 	for len(f.pool) > 0 {
 		c = f.pool[0]
@@ -651,6 +757,9 @@ func (f *Fs) getSftpConnection(ctx context.Context) (c *conn, err error) {
 		}
 		return false, nil
 	})
+	if f.opt.Connections > 0 && c == nil {
+		f.tokens.Put()
+	}
 	return c, err
 }
 
@@ -661,7 +770,13 @@ func (f *Fs) getSftpConnection(ctx context.Context) (c *conn, err error) {
 // if err is not nil then it checks the connection is alive using a
 // Getwd request
 func (f *Fs) putSftpConnection(pc **conn, err error) {
+	if f.opt.Connections > 0 {
+		defer f.tokens.Put()
+	}
 	c := *pc
+	if !c.sshClient.CanReuse() {
+		return
+	}
 	*pc = nil
 	if err != nil {
 		// work out if this is an expected error
@@ -716,13 +831,13 @@ func (f *Fs) drainPool(ctx context.Context) (err error) {
 		if cErr := c.closed(); cErr == nil {
 			cErr = c.close()
 			if cErr != nil {
-				err = cErr
+				fs.Debugf(f, "Ignoring error closing connection: %v", cErr)
 			}
 		}
 		f.pool[i] = nil
 	}
 	f.pool = nil
-	return err
+	return nil
 }
 
 // NewFs creates a new Fs object from the name and root. It connects to
@@ -740,6 +855,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	if err != nil {
 		return nil, err
 	}
+	if len(opt.SSH) != 0 && ((opt.User != currentUser && opt.User != "") || opt.Host != "" || (opt.Port != "22" && opt.Port != "")) {
+		fs.Logf(name, "--sftp-ssh is in use - ignoring user/host/port from config - set in the parameters to --sftp-ssh (remove them from the config to silence this warning)")
+	}
+	f.tokens = pacer.NewTokenDispenser(opt.Connections)
+
 	if opt.User == "" {
 		opt.User = currentUser
 	}
@@ -792,7 +912,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	pubkeyFile := env.ShellExpand(opt.PubKeyFile)
 	//keyPem := env.ShellExpand(opt.KeyPem)
 	// Add ssh agent-auth if no password or file or key PEM specified
-	if (opt.Pass == "" && keyFile == "" && !opt.AskPassword && opt.KeyPem == "") || opt.KeyUseAgent {
+	if (len(opt.SSH) == 0 && opt.Pass == "" && keyFile == "" && !opt.AskPassword && opt.KeyPem == "") || opt.KeyUseAgent {
 		sshAgentClient, _, err := sshagent.New()
 		if err != nil {
 			return nil, fmt.Errorf("couldn't connect to ssh-agent: %w", err)
@@ -883,13 +1003,21 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		}
 
 		// If a public key has been specified then use that
-		if pubkeyFile != "" {
-			certfile, err := os.ReadFile(pubkeyFile)
-			if err != nil {
-				return nil, fmt.Errorf("unable to read cert file: %w", err)
+		if pubkeyFile != "" || opt.PubKey != "" {
+			pubKeyRaw := []byte(opt.PubKey)
+			// Use this error if public key is provided inline and is not a certificate
+			// if public key file is provided instead, use the err in the if block
+			notACertError := errors.New("public key provided is not a certificate: " + opt.PubKey)
+			if opt.PubKey == "" {
+				notACertError = errors.New("public key file is not a certificate file: " + pubkeyFile)
+				err := error(nil)
+				pubKeyRaw, err = os.ReadFile(pubkeyFile)
+				if err != nil {
+					return nil, fmt.Errorf("unable to read cert file: %w", err)
+				}
 			}
 
-			pk, _, _, _, err := ssh.ParseAuthorizedKey(certfile)
+			pk, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyRaw)
 			if err != nil {
 				return nil, fmt.Errorf("unable to parse cert file: %w", err)
 			}
@@ -903,7 +1031,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 			// knows everything it needs.
 			cert, ok := pk.(*ssh.Certificate)
 			if !ok {
-				return nil, errors.New("public key file is not a certificate file: " + pubkeyFile)
+				return nil, notACertError
 			}
 			pubsigner, err := ssh.NewCertSigner(cert, signer)
 			if err != nil {
@@ -961,7 +1089,7 @@ func (f *Fs) keyboardInteractiveReponse(user, instruction string, questions []st
 // save it so on reconnection we give back the previous string.
 // This removes the ability to let the user correct a mistaken entry,
 // but means that reconnects are transparent.
-// We'll re-use config.Pass for this, 'cos we know it's not been
+// We'll reuse config.Pass for this, 'cos we know it's not been
 // specified.
 func (f *Fs) getPass() (string, error) {
 	for f.savedpswd == "" {
@@ -992,9 +1120,15 @@ func NewFsWithConnection(ctx context.Context, f *Fs, name string, root string, m
 	}
 
 	f.features = (&fs.Features{
-		CanHaveEmptyDirectories: true,
-		SlowHash:                true,
+		CanHaveEmptyDirectories:  true,
+		SlowHash:                 true,
+		PartialUploads:           true,
+		DirModTimeUpdatesOnWrite: true, // indicate writing files to a directory updates its modtime
 	}).Fill(ctx, f)
+	if !opt.CopyIsHardlink {
+		// Disable server side copy unless --sftp-copy-is-hardlink is set
+		f.features.Copy = nil
+	}
 	// Make a connection and pool it to return errors early
 	c, err := f.getSftpConnection(ctx)
 	if err != nil {
@@ -1011,8 +1145,8 @@ func NewFsWithConnection(ctx context.Context, f *Fs, name string, root string, m
 			fs.Debugf(f, "Failed to get shell session for shell type detection command: %v", err)
 		} else {
 			var stdout, stderr bytes.Buffer
-			session.Stdout = &stdout
-			session.Stderr = &stderr
+			session.SetStdout(&stdout)
+			session.SetStderr(&stderr)
 			shellCmd := "echo ${ShellId}%ComSpec%"
 			fs.Debugf(f, "Running shell type detection remote command: %s", shellCmd)
 			err = session.Run(shellCmd)
@@ -1065,7 +1199,7 @@ func NewFsWithConnection(ctx context.Context, f *Fs, name string, root string, m
 		}
 	}
 	f.putSftpConnection(&c, err)
-	if root != "" {
+	if root != "" && !strings.HasSuffix(root, "/") {
 		// Check to see if the root is actually an existing file,
 		// and if so change the filesystem root to its parent directory.
 		oldAbsRoot := f.absRoot
@@ -1168,13 +1302,6 @@ func (f *Fs) dirExists(ctx context.Context, dir string) (bool, error) {
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	root := path.Join(f.absRoot, dir)
-	ok, err := f.dirExists(ctx, root)
-	if err != nil {
-		return nil, fmt.Errorf("List failed: %w", err)
-	}
-	if !ok {
-		return nil, fs.ErrorDirNotFound
-	}
 	sftpDir := root
 	if sftpDir == "" {
 		sftpDir = "."
@@ -1186,6 +1313,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	infos, err := c.sftpClient.ReadDir(sftpDir)
 	f.putSftpConnection(&c, err)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fs.ErrorDirNotFound
+		}
 		return nil, fmt.Errorf("error listing %q: %w", dir, err)
 	}
 	for _, info := range infos {
@@ -1292,6 +1422,15 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	return f.mkdir(ctx, root)
 }
 
+// DirSetModTime sets the directory modtime for dir
+func (f *Fs) DirSetModTime(ctx context.Context, dir string, modTime time.Time) error {
+	o := Object{
+		fs:     f,
+		remote: dir,
+	}
+	return o.SetModTime(ctx, modTime)
+}
+
 // Rmdir removes the root directory of the Fs object
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	// Check to see if directory is empty as some servers will
@@ -1329,10 +1468,17 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	if err != nil {
 		return nil, fmt.Errorf("Move: %w", err)
 	}
-	err = c.sftpClient.Rename(
-		srcObj.path(),
-		path.Join(f.absRoot, remote),
-	)
+	srcPath, dstPath := srcObj.path(), path.Join(f.absRoot, remote)
+	if _, ok := c.sftpClient.HasExtension("posix-rename@openssh.com"); ok {
+		err = c.sftpClient.PosixRename(srcPath, dstPath)
+	} else {
+		// If haven't got PosixRename then remove source first before renaming
+		err = c.sftpClient.Remove(dstPath)
+		if err != nil && !errors.Is(err, iofs.ErrNotExist) {
+			fs.Errorf(f, "Move: Failed to remove existing file %q: %v", dstPath, err)
+		}
+		err = c.sftpClient.Rename(srcPath, dstPath)
+	}
 	f.putSftpConnection(&c, err)
 	if err != nil {
 		return nil, fmt.Errorf("Move Rename failed: %w", err)
@@ -1340,6 +1486,43 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	dstObj, err := f.NewObject(ctx, remote)
 	if err != nil {
 		return nil, fmt.Errorf("Move NewObject failed: %w", err)
+	}
+	return dstObj, nil
+}
+
+// Copy server side copies a remote sftp file object using hardlinks
+func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	if !f.opt.CopyIsHardlink {
+		return nil, fs.ErrorCantCopy
+	}
+	srcObj, ok := src.(*Object)
+	if !ok {
+		fs.Debugf(src, "Can't copy - not same remote type")
+		return nil, fs.ErrorCantCopy
+	}
+	err := f.mkParentDir(ctx, remote)
+	if err != nil {
+		return nil, fmt.Errorf("Copy mkParentDir failed: %w", err)
+	}
+	c, err := f.getSftpConnection(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Copy: %w", err)
+	}
+	srcPath, dstPath := srcObj.path(), path.Join(f.absRoot, remote)
+	err = c.sftpClient.Link(srcPath, dstPath)
+	f.putSftpConnection(&c, err)
+	if err != nil {
+		if sftpErr, ok := err.(*sftp.StatusError); ok {
+			if sftpErr.FxCode() == sftp.ErrSSHFxOpUnsupported {
+				// Remote doesn't support Link
+				return nil, fs.ErrorCantCopy
+			}
+		}
+		return nil, fmt.Errorf("Copy failed: %w", err)
+	}
+	dstObj, err := f.NewObject(ctx, remote)
+	if err != nil {
+		return nil, fmt.Errorf("Copy NewObject failed: %w", err)
 	}
 	return dstObj, nil
 }
@@ -1419,8 +1602,8 @@ func (f *Fs) run(ctx context.Context, cmd string) ([]byte, error) {
 	}()
 
 	var stdout, stderr bytes.Buffer
-	session.Stdout = &stdout
-	session.Stderr = &stderr
+	session.SetStdout(&stdout)
+	session.SetStderr(&stderr)
 
 	fs.Debugf(f, "Running remote command: %s", cmd)
 	err = session.Run(cmd)
@@ -1545,7 +1728,7 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 		fs.Debugf(f, "About path %q", aboutPath)
 		vfsStats, err = c.sftpClient.StatVFS(aboutPath)
 	}
-	f.putSftpConnection(&c, err) // Return to pool asap, if running shell command below it will be re-used
+	f.putSftpConnection(&c, err) // Return to pool asap, if running shell command below it will be reused
 	if vfsStats != nil {
 		total := vfsStats.TotalSpace()
 		free := vfsStats.FreeSpace()
@@ -1727,6 +1910,9 @@ func (f *Fs) remotePath(remote string) string {
 func (f *Fs) remoteShellPath(remote string) string {
 	if f.opt.PathOverride != "" {
 		shellPath := path.Join(f.opt.PathOverride, remote)
+		if f.opt.PathOverride[0] == '@' {
+			shellPath = path.Join(strings.TrimPrefix(f.opt.PathOverride, "@"), f.absRoot, remote)
+		}
 		fs.Debugf(f, "Shell path redirected to %q with option path_override", shellPath)
 		return shellPath
 	}
@@ -1795,7 +1981,7 @@ func (o *Object) Size() int64 {
 
 // ModTime returns the modification time of the remote sftp file
 func (o *Object) ModTime(ctx context.Context) time.Time {
-	return o.modTime
+	return time.Unix(int64(o.modTime), 0)
 }
 
 // path returns the native SFTP path of the object
@@ -1810,7 +1996,7 @@ func (o *Object) shellPath() string {
 
 // setMetadata updates the info in the object from the stat result passed in
 func (o *Object) setMetadata(info os.FileInfo) {
-	o.modTime = info.ModTime()
+	o.modTime = info.Sys().(*sftp.FileStat).Mtime
 	o.size = info.Size()
 	o.mode = info.Mode()
 }
@@ -1863,7 +2049,7 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 		return fmt.Errorf("SetModTime failed: %w", err)
 	}
 	err = o.stat(ctx)
-	if err != nil {
+	if err != nil && err != fs.ErrorIsDir {
 		return fmt.Errorf("SetModTime stat failed: %w", err)
 	}
 	return nil
@@ -1915,10 +2101,10 @@ func (file *objectReader) Read(p []byte) (n int, err error) {
 
 // Close a reader of a remote sftp file
 func (file *objectReader) Close() (err error) {
-	// Close the sftpFile - this will likely cause the WriteTo to error
-	err = file.sftpFile.Close()
 	// Close the pipeReader so writes to the pipeWriter fail
 	_ = file.pipeReader.Close()
+	// Close the sftpFile - this will likely cause the WriteTo to error
+	err = file.sftpFile.Close()
 	// Wait for the background process to finish
 	<-file.done
 	// Show connection no longer in use
@@ -1984,9 +2170,10 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return fmt.Errorf("Update: %w", err)
 	}
+	// Hang on to the connection for the whole upload so it doesn't get reused while we are uploading
 	file, err := c.sftpClient.OpenFile(o.path(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-	o.fs.putSftpConnection(&c, err)
 	if err != nil {
+		o.fs.putSftpConnection(&c, err)
 		return fmt.Errorf("Update Create failed: %w", err)
 	}
 	// remove the file if upload failed
@@ -2006,14 +2193,18 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 	_, err = file.ReadFrom(&sizeReader{Reader: in, size: src.Size()})
 	if err != nil {
+		o.fs.putSftpConnection(&c, err)
 		remove()
 		return fmt.Errorf("Update ReadFrom failed: %w", err)
 	}
 	err = file.Close()
 	if err != nil {
+		o.fs.putSftpConnection(&c, err)
 		remove()
 		return fmt.Errorf("Update Close failed: %w", err)
 	}
+	// Release connection only when upload has finished so we don't upload multiple files on the same connection
+	o.fs.putSftpConnection(&c, err)
 
 	// Set the mod time - this stats the object if o.fs.opt.SetModTime == true
 	err = o.SetModTime(ctx, src.ModTime(ctx))
@@ -2028,7 +2219,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 			// In the specific case of o.fs.opt.SetModTime == false
 			// if the object wasn't found then don't return an error
 			fs.Debugf(o, "Not found after upload with set_modtime=false so returning best guess")
-			o.modTime = src.ModTime(ctx)
+			o.modTime = uint32(src.ModTime(ctx).Unix())
 			o.size = src.Size()
 			o.mode = os.FileMode(0666) // regular file
 		} else if err != nil {
@@ -2052,11 +2243,13 @@ func (o *Object) Remove(ctx context.Context) error {
 
 // Check the interfaces are satisfied
 var (
-	_ fs.Fs          = &Fs{}
-	_ fs.PutStreamer = &Fs{}
-	_ fs.Mover       = &Fs{}
-	_ fs.DirMover    = &Fs{}
-	_ fs.Abouter     = &Fs{}
-	_ fs.Shutdowner  = &Fs{}
-	_ fs.Object      = &Object{}
+	_ fs.Fs             = &Fs{}
+	_ fs.PutStreamer    = &Fs{}
+	_ fs.Mover          = &Fs{}
+	_ fs.Copier         = &Fs{}
+	_ fs.DirMover       = &Fs{}
+	_ fs.DirSetModTimer = &Fs{}
+	_ fs.Abouter        = &Fs{}
+	_ fs.Shutdowner     = &Fs{}
+	_ fs.Object         = &Object{}
 )

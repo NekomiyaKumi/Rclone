@@ -67,15 +67,18 @@ func init() {
 				Value: "https://cloud.seafile.com/",
 				Help:  "Connect to cloud.seafile.com.",
 			}},
+			Sensitive: true,
 		}, {
-			Name:     configUser,
-			Help:     "User name (usually email address).",
-			Required: true,
+			Name:      configUser,
+			Help:      "User name (usually email address).",
+			Required:  true,
+			Sensitive: true,
 		}, {
 			// Password is not required, it will be left blank for 2FA
 			Name:       configPassword,
 			Help:       "Password.",
 			IsPassword: true,
+			Sensitive:  true,
 		}, {
 			Name:    config2FA,
 			Help:    "Two-factor authentication ('true' if the account has 2FA enabled).",
@@ -87,6 +90,7 @@ func init() {
 			Name:       configLibraryKey,
 			Help:       "Library password (for encrypted libraries only).\n\nLeave blank if you pass it through the command line.",
 			IsPassword: true,
+			Sensitive:  true,
 		}, {
 			Name:     configCreateLibrary,
 			Help:     "Should rclone create a library if it doesn't exist.",
@@ -94,9 +98,10 @@ func init() {
 			Default:  false,
 		}, {
 			// Keep the authentication token after entering the 2FA code
-			Name: configAuthToken,
-			Help: "Authentication token.",
-			Hide: fs.OptionHideBoth,
+			Name:      configAuthToken,
+			Help:      "Authentication token.",
+			Hide:      fs.OptionHideBoth,
+			Sensitive: true,
 		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
@@ -295,6 +300,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 				return f, nil
 			}
 			return f, err
+		}
+		// Correct root if definitely pointing to a file
+		f.root = path.Dir(f.root)
+		if f.root == "." || f.root == "/" {
+			f.root = ""
 		}
 		// return an error with an fs which points to the parent
 		return f, fs.ErrorIsFile

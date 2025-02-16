@@ -1,5 +1,4 @@
 //go:build !plan9 && !js
-// +build !plan9,!js
 
 // Package ncdu implements a text based user interface for exploring a remote
 package ncdu
@@ -32,8 +31,7 @@ func init() {
 var commandDefinition = &cobra.Command{
 	Use:   "ncdu remote:path",
 	Short: `Explore a remote with a text based user interface.`,
-	Long: `
-This displays a text based user interface allowing the navigation of a
+	Long: `This displays a text based user interface allowing the navigation of a
 remote. It is most useful for answering the question - "What is using
 all my disk space?".
 
@@ -66,7 +64,7 @@ These flags have the following meaning:
 
 This an homage to the [ncdu tool](https://dev.yorhel.nl/ncdu) but for
 rclone remotes.  It is missing lots of features at the moment
-but is useful as it stands.
+but is useful as it stands. Unlike ncdu it does not show excluded files.
 
 Note that it might take some time to delete big files/directories. The
 UI won't respond in the meantime since the deletion is done synchronously.
@@ -77,6 +75,7 @@ the remote you can also use the [size](/commands/rclone_size/) command.
 `,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.37",
+		"groups":            "Filter,Listing",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)
@@ -111,8 +110,10 @@ func helpText() (tr []string) {
 	tr = append(tr, []string{
 		" Y display current path",
 		" ^L refresh screen (fix screen corruption)",
+		" r recalculate file sizes",
 		" ? to toggle help on and off",
-		" q/ESC/^c to quit",
+		" ESC to close the menu box",
+		" q/^c to quit",
 	}...)
 	return
 }
@@ -121,6 +122,7 @@ func helpText() (tr []string) {
 type UI struct {
 	s                  tcell.Screen
 	f                  fs.Fs     // fs being displayed
+	cancel             func()    // cancel the current scanning process
 	fsName             string    // human name of Fs
 	root               *scan.Dir // root directory
 	d                  *scan.Dir // current directory being displayed
@@ -383,6 +385,12 @@ func (u *UI) Draw() {
 		}
 		showEmptyDir := u.hasEmptyDir()
 		dirPos := u.dirPosMap[u.path]
+		// Check to see if a rescan has invalidated the position
+		if dirPos.offset >= len(u.sortPerm) {
+			delete(u.dirPosMap, u.path)
+			dirPos.offset = 0
+			dirPos.entry = 0
+		}
 		for i, j := range u.sortPerm[dirPos.offset:] {
 			entry := u.entries[j]
 			n := i + dirPos.offset
@@ -899,6 +907,16 @@ func NewUI(f fs.Fs) *UI {
 	}
 }
 
+func (u *UI) scan() (chan *scan.Dir, chan error, chan struct{}) {
+	if cancel := u.cancel; cancel != nil {
+		cancel()
+	}
+	u.listing = true
+	ctx := context.Background()
+	ctx, u.cancel = context.WithCancel(ctx)
+	return scan.Scan(ctx, u.f)
+}
+
 // Run shows the user interface
 func (u *UI) Run() error {
 	var err error
@@ -911,23 +929,23 @@ func (u *UI) Run() error {
 		return fmt.Errorf("screen init: %w", err)
 	}
 
-	// Hijack fs.LogPrint so that it doesn't corrupt the screen.
-	if logPrint := fs.LogPrint; !log.Redirected() {
+	// Hijack fs.LogOutput so that it doesn't corrupt the screen.
+	if logOutput := fs.LogOutput; !log.Redirected() {
 		type log struct {
 			text  string
 			level fs.LogLevel
 		}
 		var logs []log
-		fs.LogPrint = func(level fs.LogLevel, text string) {
+		fs.LogOutput = func(level fs.LogLevel, text string) {
 			if len(logs) > 100 {
 				logs = logs[len(logs)-100:]
 			}
 			logs = append(logs, log{level: level, text: text})
 		}
 		defer func() {
-			fs.LogPrint = logPrint
+			fs.LogOutput = logOutput
 			for i := range logs {
-				logPrint(logs[i].level, logs[i].text)
+				logOutput(logs[i].level, logs[i].text)
 			}
 		}()
 	}
@@ -935,8 +953,7 @@ func (u *UI) Run() error {
 	defer u.s.Fini()
 
 	// scan the disk in the background
-	u.listing = true
-	rootChan, errChan, updated := scan.Scan(context.Background(), u.f)
+	rootChan, errChan, updated := u.scan()
 
 	// Poll the events into a channel
 	events := make(chan tcell.Event)
@@ -972,7 +989,7 @@ outer:
 				}
 				switch c {
 				case key(tcell.KeyEsc), key(tcell.KeyCtrlC), 'q':
-					if u.showBox {
+					if u.showBox || c == key(tcell.KeyEsc) {
 						u.showBox = false
 					} else {
 						break outer
@@ -1037,6 +1054,9 @@ outer:
 					u.deleteSelected()
 				case '?':
 					u.togglePopupBox(helpText())
+				case 'r':
+					// restart scan
+					rootChan, errChan, updated = u.scan()
 
 				// Refresh the screen. Not obvious what key to map
 				// this onto, but ^L is a common choice.

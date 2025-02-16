@@ -1,5 +1,4 @@
 //go:build !plan9 && !js
-// +build !plan9,!js
 
 // Package cache implements a virtual provider to cache existing remotes.
 package cache
@@ -76,17 +75,19 @@ func init() {
 			Name: "plex_url",
 			Help: "The URL of the Plex server.",
 		}, {
-			Name: "plex_username",
-			Help: "The username of the Plex user.",
+			Name:      "plex_username",
+			Help:      "The username of the Plex user.",
+			Sensitive: true,
 		}, {
 			Name:       "plex_password",
 			Help:       "The password of the Plex user.",
 			IsPassword: true,
 		}, {
-			Name:     "plex_token",
-			Help:     "The plex token for authentication - auto set normally.",
-			Hide:     fs.OptionHideBoth,
-			Advanced: true,
+			Name:      "plex_token",
+			Help:      "The plex token for authentication - auto set normally.",
+			Hide:      fs.OptionHideBoth,
+			Advanced:  true,
+			Sensitive: true,
 		}, {
 			Name:     "plex_insecure",
 			Help:     "Skip all certificate verification when connecting to the Plex server.",
@@ -408,18 +409,16 @@ func NewFs(ctx context.Context, name, rootPath string, m configmap.Mapper) (fs.F
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to the Plex API %v: %w", opt.PlexURL, err)
 			}
-		} else {
-			if opt.PlexPassword != "" && opt.PlexUsername != "" {
-				decPass, err := obscure.Reveal(opt.PlexPassword)
-				if err != nil {
-					decPass = opt.PlexPassword
-				}
-				f.plexConnector, err = newPlexConnector(f, opt.PlexURL, opt.PlexUsername, decPass, opt.PlexInsecure, func(token string) {
-					m.Set("plex_token", token)
-				})
-				if err != nil {
-					return nil, fmt.Errorf("failed to connect to the Plex API %v: %w", opt.PlexURL, err)
-				}
+		} else if opt.PlexPassword != "" && opt.PlexUsername != "" {
+			decPass, err := obscure.Reveal(opt.PlexPassword)
+			if err != nil {
+				decPass = opt.PlexPassword
+			}
+			f.plexConnector, err = newPlexConnector(f, opt.PlexURL, opt.PlexUsername, decPass, opt.PlexInsecure, func(token string) {
+				m.Set("plex_token", token)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to the Plex API %v: %w", opt.PlexURL, err)
 			}
 		}
 	}

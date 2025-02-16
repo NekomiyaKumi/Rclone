@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ import (
 const (
 	initialChunkSize = 262144  // Initial and max sizes of chunks when reading parts of the file. Currently
 	maxChunkSize     = 8388608 // at 256 KiB and 8 MiB.
+	chunkStreams     = 0       // Streams to use for reading
 
 	bufferSize          = 8388608
 	heuristicBytes      = 1048576
@@ -172,20 +174,33 @@ func NewFs(ctx context.Context, name, rpath string, m configmap.Mapper) (fs.Fs, 
 		opt:  *opt,
 		mode: compressionModeFromName(opt.CompressionMode),
 	}
+	// Correct root if definitely pointing to a file
+	if err == fs.ErrorIsFile {
+		f.root = path.Dir(f.root)
+		if f.root == "." || f.root == "/" {
+			f.root = ""
+		}
+	}
 	// the features here are ones we could support, and they are
 	// ANDed with the ones from wrappedFs
 	f.features = (&fs.Features{
-		CaseInsensitive:         true,
-		DuplicateFiles:          false,
-		ReadMimeType:            false,
-		WriteMimeType:           false,
-		GetTier:                 true,
-		SetTier:                 true,
-		BucketBased:             true,
-		CanHaveEmptyDirectories: true,
-		ReadMetadata:            true,
-		WriteMetadata:           true,
-		UserMetadata:            true,
+		CaseInsensitive:          true,
+		DuplicateFiles:           false,
+		ReadMimeType:             false,
+		WriteMimeType:            false,
+		GetTier:                  true,
+		SetTier:                  true,
+		BucketBased:              true,
+		CanHaveEmptyDirectories:  true,
+		ReadMetadata:             true,
+		WriteMetadata:            true,
+		UserMetadata:             true,
+		ReadDirMetadata:          true,
+		WriteDirMetadata:         true,
+		WriteDirSetModTime:       true,
+		UserDirMetadata:          true,
+		DirModTimeUpdatesOnWrite: true,
+		PartialUploads:           true,
 	}).Fill(ctx, f).Mask(ctx, wrappedFs).WrapsFs(f, wrappedFs)
 	// We support reading MIME types no matter the wrapped fs
 	f.features.ReadMimeType = true
@@ -254,6 +269,16 @@ func makeMetadataName(remote string) (newRemote string) {
 // Checks whether a file is a metadata file
 func isMetadataFile(filename string) bool {
 	return strings.HasSuffix(filename, metaFileExt)
+}
+
+// Checks whether a file is a metadata file and returns the original
+// file name and a flag indicating whether it was a metadata file or
+// not.
+func unwrapMetadataFile(filename string) (string, bool) {
+	if !isMetadataFile(filename) {
+		return "", false
+	}
+	return filename[:len(filename)-len(metaFileExt)], true
 }
 
 // makeDataName generates the file name for a data file with specified compression mode
@@ -431,7 +456,7 @@ func (f *Fs) verifyObjectHash(ctx context.Context, o fs.Object, hasher *hash.Mul
 		if err != nil {
 			fs.Errorf(o, "Failed to remove corrupted object: %v", err)
 		}
-		return fmt.Errorf("corrupted on transfer: %v compressed hashes differ %q vs %q", ht, srcHash, dstHash)
+		return fmt.Errorf("corrupted on transfer: %v compressed hashes differ src(%s) %q vs dst(%s) %q", ht, f.Fs, srcHash, o.Fs(), dstHash)
 	}
 	return nil
 }
@@ -765,6 +790,14 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	return f.Fs.Mkdir(ctx, dir)
 }
 
+// MkdirMetadata makes the root directory of the Fs object
+func (f *Fs) MkdirMetadata(ctx context.Context, dir string, metadata fs.Metadata) (fs.Directory, error) {
+	if do := f.Fs.Features().MkdirMetadata; do != nil {
+		return do(ctx, dir, metadata)
+	}
+	return nil, fs.ErrorNotImplemented
+}
+
 // Rmdir removes the directory (container, bucket) if empty
 //
 // Return an error if it doesn't exist or isn't empty
@@ -908,6 +941,14 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	return do(ctx, srcFs.Fs, srcRemote, dstRemote)
 }
 
+// DirSetModTime sets the directory modtime for dir
+func (f *Fs) DirSetModTime(ctx context.Context, dir string, modTime time.Time) error {
+	if do := f.Fs.Features().DirSetModTime; do != nil {
+		return do(ctx, dir, modTime)
+	}
+	return fs.ErrorNotImplemented
+}
+
 // CleanUp the trash in the Fs
 //
 // Implement this if you have a way of emptying the trash or
@@ -978,7 +1019,8 @@ func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryT
 	wrappedNotifyFunc := func(path string, entryType fs.EntryType) {
 		fs.Logf(f, "path %q entryType %d", path, entryType)
 		var (
-			wrappedPath string
+			wrappedPath    string
+			isMetadataFile bool
 		)
 		switch entryType {
 		case fs.EntryDirectory:
@@ -986,7 +1028,10 @@ func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryT
 		case fs.EntryObject:
 			// Note: All we really need to do to monitor the object is to check whether the metadata changed,
 			// as the metadata contains the hash. This will work unless there's a hash collision and the sizes stay the same.
-			wrappedPath = makeMetadataName(path)
+			wrappedPath, isMetadataFile = unwrapMetadataFile(path)
+			if !isMetadataFile {
+				return
+			}
 		default:
 			fs.Errorf(path, "press ChangeNotify: ignoring unknown EntryType %d", entryType)
 			return
@@ -1242,6 +1287,17 @@ func (o *Object) Metadata(ctx context.Context) (fs.Metadata, error) {
 	return do.Metadata(ctx)
 }
 
+// SetMetadata sets metadata for an Object
+//
+// It should return fs.ErrorNotImplemented if it can't set metadata
+func (o *Object) SetMetadata(ctx context.Context, metadata fs.Metadata) error {
+	do, ok := o.Object.(fs.SetMetadataer)
+	if !ok {
+		return fs.ErrorNotImplemented
+	}
+	return do.SetMetadata(ctx, metadata)
+}
+
 // Hash returns the selected checksum of the file
 // If no checksum is available it returns ""
 func (o *Object) Hash(ctx context.Context, ht hash.Type) (string, error) {
@@ -1307,7 +1363,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (rc io.Read
 		}
 	}
 	// Get a chunkedreader for the wrapped object
-	chunkedReader := chunkedreader.New(ctx, o.Object, initialChunkSize, maxChunkSize)
+	chunkedReader := chunkedreader.New(ctx, o.Object, initialChunkSize, maxChunkSize, chunkStreams)
 	// Get file handle
 	var file io.Reader
 	if offset != 0 {
@@ -1474,6 +1530,8 @@ var (
 	_ fs.Copier          = (*Fs)(nil)
 	_ fs.Mover           = (*Fs)(nil)
 	_ fs.DirMover        = (*Fs)(nil)
+	_ fs.DirSetModTimer  = (*Fs)(nil)
+	_ fs.MkdirMetadataer = (*Fs)(nil)
 	_ fs.PutStreamer     = (*Fs)(nil)
 	_ fs.CleanUpper      = (*Fs)(nil)
 	_ fs.UnWrapper       = (*Fs)(nil)

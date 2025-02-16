@@ -18,8 +18,7 @@ func init() {
 var commandDefinition = &cobra.Command{
 	Use:   "ls remote:path",
 	Short: `List the objects in the path with size and path.`,
-	Long: `
-Lists the objects in the source path to standard output in a human
+	Long: `Lists the objects in the source path to standard output in a human
 readable format with size and path. Recurses by default.
 
 Eg
@@ -31,6 +30,9 @@ Eg
         37600 fubuwic
 
 ` + lshelp.Help,
+	Annotations: map[string]string{
+		"groups": "Filter,Listing",
+	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)
 		fsrc := cmd.NewFsSrc(args)

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -57,8 +58,8 @@ func NewLoggedBasicAuthenticator(realm string, secrets goauth.SecretProvider) *L
 func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// skip auth for unix socket
-			if IsUnixSocket(r) {
+			// skip auth for CORS preflight
+			if r.Method == "OPTIONS" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -70,6 +71,24 @@ func basicAuth(authenticator *LoggedBasicAuth) func(next http.Handler) http.Hand
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyUser, username)
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// MiddlewareAuthCertificateUser instantiates middleware that extracts the authenticated user via client certificate common name
+func MiddlewareAuthCertificateUser() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, cert := range r.TLS.PeerCertificates {
+				if cert.Subject.CommonName != "" {
+					r = r.WithContext(context.WithValue(r.Context(), ctxKeyUser, cert.Subject.CommonName))
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			code := http.StatusUnauthorized
+			w.Header().Set("Content-Type", "text/plain")
+			http.Error(w, http.StatusText(code), code)
 		})
 	}
 }
@@ -97,16 +116,20 @@ func MiddlewareAuthBasic(user, pass, realm, salt string) Middleware {
 }
 
 // MiddlewareAuthCustom instantiates middleware that authenticates using a custom function
-func MiddlewareAuthCustom(fn CustomAuthFn, realm string) Middleware {
+func MiddlewareAuthCustom(fn CustomAuthFn, realm string, userFromContext bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// skip auth for unix socket
-			if IsUnixSocket(r) {
+			// skip auth for CORS preflight
+			if r.Method == "OPTIONS" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			user, pass, ok := parseAuthorization(r)
+			if !ok && userFromContext {
+				user, ok = CtxGetUser(r.Context())
+			}
+
 			if !ok {
 				code := http.StatusUnauthorized
 				w.Header().Set("Content-Type", "text/plain")
@@ -131,6 +154,26 @@ func MiddlewareAuthCustom(fn CustomAuthFn, realm string) Middleware {
 	}
 }
 
+var validUsernameRegexp = regexp.MustCompile(`^[\p{L}\d@._-]+$`)
+
+// MiddlewareAuthGetUserFromHeader middleware that bypasses authentication and extracts the user via a specified HTTP header(ideal for proxied setups).
+func MiddlewareAuthGetUserFromHeader(header string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			username := strings.TrimSpace(r.Header.Get(header))
+			if username != "" && validUsernameRegexp.MatchString(username) {
+				r = r.WithContext(context.WithValue(r.Context(), ctxKeyUser, username))
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			code := http.StatusUnauthorized
+			w.Header().Set("Content-Type", "text/plain")
+			http.Error(w, http.StatusText(code), code)
+		})
+	}
+}
+
 var onlyOnceWarningAllowOrigin sync.Once
 
 // MiddlewareCORS instantiates middleware that handles basic CORS protections for rcd
@@ -143,21 +186,12 @@ func MiddlewareCORS(allowOrigin string) Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// skip cors for unix sockets
-			if IsUnixSocket(r) {
-				next.ServeHTTP(w, r)
-				return
-			}
 
 			if allowOrigin != "" {
 				w.Header().Add("Access-Control-Allow-Origin", allowOrigin)
-			} else {
-				w.Header().Add("Access-Control-Allow-Origin", PublicURL(r))
+				w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
+				w.Header().Add("Access-Control-Allow-Methods", "COPY, DELETE, GET, HEAD, LOCK, MKCOL, MOVE, OPTIONS, POST, PROPFIND, PROPPATCH, PUT, TRACE, UNLOCK")
 			}
-
-			// echo back access control headers client needs
-			w.Header().Add("Access-Control-Request-Method", "POST, OPTIONS, GET, HEAD")
-			w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
 
 			next.ServeHTTP(w, r)
 		})
@@ -167,6 +201,14 @@ func MiddlewareCORS(allowOrigin string) Middleware {
 // MiddlewareStripPrefix instantiates middleware that removes the BaseURL from the path
 func MiddlewareStripPrefix(prefix string) Middleware {
 	return func(next http.Handler) http.Handler {
-		return http.StripPrefix(prefix, next)
+		stripPrefixHandler := http.StripPrefix(prefix, next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Allow OPTIONS on the root only
+			if r.URL.Path == "/" && r.Method == "OPTIONS" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			stripPrefixHandler.ServeHTTP(w, r)
+		})
 	}
 }
